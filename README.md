@@ -43,6 +43,17 @@ npm run dev
 
 Then open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 
+### Chrome Extension (JD Import Side Panel)
+- Extension files live in `extension/`.
+- In Chrome, open `chrome://extensions`, enable Developer Mode, then click `Load unpacked` and select the `extension/` folder.
+- On LinkedIn or Handshake job pages, open the extension side panel and use `Extract JD`, review/edit fields, then `Send to Local Agent`.
+- The app polls `GET /import-job/latest` during Step 2 and auto-fills JD, company, and title for new imports.
+
+Privacy note:
+- The extension reads only the current page after explicit user action (`Extract JD`).
+- It does not crawl, auto-apply, or call model APIs directly.
+- It sends extracted data only to `http://127.0.0.1:3031/import-job`.
+
 Optional Ollama terminal:
 ```bash
 ollama serve
