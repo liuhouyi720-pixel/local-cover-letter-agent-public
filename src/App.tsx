@@ -35,6 +35,7 @@ import {
 } from "./lib/prompts";
 import { extractTextFromFile } from "./lib/resumeParser";
 import { CoverLetterResult, tryParseAndValidate } from "./lib/validate";
+import { loadLatestImportedJob } from "./lib/jobImport";
 import "./App.css";
 
 const DEFAULT_PROVIDER: ModelProvider = "ollama";
@@ -44,6 +45,7 @@ const DEFAULT_BASE_URL = "http://localhost:11434";
 const DEFAULT_TEMPLATE_DOCX_PATH = "";
 const MIN_JD_LENGTH = 120;
 const STEP_TRANSITION_MS = 180;
+const JOB_IMPORT_POLL_INTERVAL_MS = 2000;
 
 const MODEL_OPTIONS: Record<ModelProvider, string[]> = {
   ollama: ["qwen2.5:7b-instruct", "llama3.1:8b-instruct", "mistral:7b-instruct"],
@@ -170,6 +172,8 @@ function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [error, setError] = useState("");
   const [exportStatus, setExportStatus] = useState("");
+  const [lastImportedJobAt, setLastImportedJobAt] = useState("");
+  const [importSyncState, setImportSyncState] = useState<"idle" | "ok" | "helper-down" | "invalid-job">("idle");
 
   const [hasHydrated, setHasHydrated] = useState(false);
   const [isSideRailOpen, setIsSideRailOpen] = useState(false);
@@ -455,6 +459,76 @@ function App() {
     if (!sourceDocumentsText.trim()) return;
     void runAutoMemoryPrefill(sourceDocumentsText, "step3-entry");
   }, [appMode, currentStep, autoMemoryPrefilled, sourceDocumentsText]);
+
+  useEffect(() => {
+    if (appMode !== "pipeline") return;
+    if (currentStep !== 2) return;
+
+    let cancelled = false;
+    let timerId: number | null = null;
+
+    const pollLatestImport = async () => {
+      try {
+        const latestJob = await loadLatestImportedJob();
+        if (cancelled) return;
+
+        if (importSyncState !== "ok" && importSyncState !== "idle") {
+          showStatus("Job import sync reconnected.");
+          setError((prev) =>
+            prev.startsWith("Local agent is not running. Start `npm run export-helper` to enable job import sync.") ||
+            prev.startsWith("Imported job payload is invalid:")
+              ? ""
+              : prev
+          );
+        }
+        if (importSyncState !== "ok") {
+          setImportSyncState("ok");
+        }
+
+        if (!latestJob) return;
+        if (latestJob.importedAt === lastImportedJobAt) return;
+
+        setJdText(latestJob.description);
+        setCompanyName(latestJob.company);
+        setJobTitle(latestJob.title);
+        setLastImportedJobAt(latestJob.importedAt);
+
+        if (latestJob.description.trim().length < MIN_JD_LENGTH) {
+          setError(
+            `Imported JD is short (${latestJob.description.trim().length} chars). Review or extend it before generating.`
+          );
+        }
+
+        showStatus(`Imported JD from ${latestJob.source}.`);
+      } catch (err) {
+        if (cancelled) return;
+        const message = (err as Error).message || "Failed to sync imported job.";
+
+        if (message.includes("Cannot reach local helper")) {
+          if (importSyncState !== "helper-down") {
+            setImportSyncState("helper-down");
+            setError("Local agent is not running. Start `npm run export-helper` to enable job import sync.");
+          }
+        } else if (importSyncState !== "invalid-job") {
+          setImportSyncState("invalid-job");
+          setError(`Imported job payload is invalid: ${message}`);
+        }
+      } finally {
+        if (!cancelled) {
+          timerId = window.setTimeout(pollLatestImport, JOB_IMPORT_POLL_INTERVAL_MS);
+        }
+      }
+    };
+
+    void pollLatestImport();
+
+    return () => {
+      cancelled = true;
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [appMode, currentStep, lastImportedJobAt, importSyncState]);
 
   function showStatus(message: string) {
     setStatusMessage(message);
@@ -878,6 +952,8 @@ function App() {
     setRawMemoryOutput("");
     setRawInterviewOutput("");
     setIsGeneratingFromStep3(false);
+    setLastImportedJobAt("");
+    setImportSyncState("idle");
     showStatus("Cleared successfully");
   }
 
@@ -909,6 +985,7 @@ function App() {
     setShowValidationDialog(false);
     setShowStep3Validation(false);
     setIsGeneratingFromStep3(false);
+    setImportSyncState("idle");
   }
 
   function handleCompleteAndNextJob() {
