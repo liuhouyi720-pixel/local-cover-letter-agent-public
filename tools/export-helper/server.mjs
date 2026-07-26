@@ -10,10 +10,6 @@ const DEFAULT_TEMPLATE_DOCX_PATH = "";
 const HELPER_DIR = path.dirname(fileURLToPath(import.meta.url));
 const LOCAL_CONFIG_PATH = path.join(HELPER_DIR, "local-config.json");
 const WORD_RENDER_SCRIPT = path.join(HELPER_DIR, "render-template.ps1");
-const IMPORT_SOURCES = new Set(["linkedin", "handshake", "generic"]);
-const MIN_IMPORTED_DESCRIPTION_LENGTH = 120;
-
-let latestImportedJob = null;
 
 function sanitizeFilenamePart(value) {
   return (value || "")
@@ -223,56 +219,6 @@ function readJsonBody(req) {
   });
 }
 
-function readTrimmedString(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function normalizeImportedJob(input) {
-  if (!input || typeof input !== "object") {
-    throw new Error("Request body must be a JSON object.");
-  }
-
-  const source = readTrimmedString(input.source).toLowerCase();
-  const title = readTrimmedString(input.title);
-  const company = readTrimmedString(input.company);
-  const location = readTrimmedString(input.location);
-  const description = readTrimmedString(input.description);
-  const url = readTrimmedString(input.url);
-  const importedAt = readTrimmedString(input.importedAt);
-
-  if (!IMPORT_SOURCES.has(source)) {
-    throw new Error("source must be one of: linkedin, handshake, generic.");
-  }
-  if (!title) {
-    throw new Error("title is required.");
-  }
-  if (!company) {
-    throw new Error("company is required.");
-  }
-  if (!location) {
-    throw new Error("location is required.");
-  }
-  if (!description) {
-    throw new Error("description is required.");
-  }
-  if (!url) {
-    throw new Error("url is required.");
-  }
-  if (!importedAt) {
-    throw new Error("importedAt is required.");
-  }
-
-  return {
-    source,
-    title,
-    company,
-    location,
-    description,
-    url,
-    importedAt
-  };
-}
-
 function isChatMessage(value) {
   return (
     value &&
@@ -354,14 +300,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && req.url === "/import-job/latest") {
-    sendJson(res, 200, {
-      ok: true,
-      job: latestImportedJob
-    });
-    return;
-  }
-
   if (req.method === "POST" && req.url === "/openai-key") {
     try {
       const parsed = await readJsonBody(req);
@@ -418,28 +356,6 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 500, {
         error: error instanceof Error ? error.message : "OpenAI chat request failed."
-      });
-    }
-    return;
-  }
-
-  if (req.method === "POST" && req.url === "/import-job") {
-    try {
-      const parsed = await readJsonBody(req);
-      const normalizedJob = normalizeImportedJob(parsed);
-      latestImportedJob = normalizedJob;
-
-      sendJson(res, 200, {
-        ok: true,
-        job: normalizedJob,
-        warnings:
-          normalizedJob.description.length < MIN_IMPORTED_DESCRIPTION_LENGTH
-            ? [`Description is short (${normalizedJob.description.length} chars).`]
-            : []
-      });
-    } catch (error) {
-      sendJson(res, 400, {
-        error: error instanceof Error ? error.message : "Failed to import job."
       });
     }
     return;

@@ -1,8 +1,5 @@
 # dependencies
 node_modules/
-__pycache__/
-*.py[cod]
-*.egg-info/
 
 # build outputs
 dist/
@@ -46,10 +43,6 @@ tools/export-helper/local-config.json
 cover-letters/
 output/
 exports/
-data/*
-!data/.gitkeep
-outputs/*
-!outputs/.gitkeep
 *.pdf
 *-Cover Letter-*.docx
 *-Cover Letter-*.txt
