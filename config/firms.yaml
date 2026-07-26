@@ -1,0 +1,17 @@
+firms:
+  pwc:
+    enabled: true
+    source: pwc_us_talentbrew
+    search_url: https://jobs.us.pwc.com/en/search-jobs
+  kpmg:
+    enabled: false
+    source: unknown
+    search_url: unknown
+  ey:
+    enabled: false
+    source: unknown
+    search_url: unknown
+  deloitte:
+    enabled: false
+    source: unknown
+    search_url: unknown

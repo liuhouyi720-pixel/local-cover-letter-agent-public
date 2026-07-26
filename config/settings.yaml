@@ -1,0 +1,6 @@
+database_path: data/jobs.db
+output_directory: outputs
+request_timeout_seconds: 30
+request_interval_seconds: 2
+max_retries: 3
+user_agent: "BigFourUSJobMonitor-MVP0/0.1 (local, low-frequency job research)"
