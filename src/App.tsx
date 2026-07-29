@@ -1534,22 +1534,27 @@ function App() {
     <div className="app">
       <header className="header">
         <div className="headerTop">
-          {appMode === "pipeline" && (
-            <button
-              type="button"
-              className="menuToggle"
-              onClick={() => setIsSideRailOpen(true)}
-              aria-label="Open step navigation"
-              title="Open steps"
-            >
-              <span />
-              <span />
-              <span />
-            </button>
-          )}
-          <h1>Cover Letter Agent (MVP-1 Wizard)</h1>
+          <button
+            type="button"
+            className="menuToggle"
+            onClick={() => setIsSideRailOpen(true)}
+            aria-label="Open navigation"
+            title="Open navigation"
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+          <div className="headerCopy">
+            <p className="eyebrow">{appMode === "intake" ? "Workspace setup" : `Step ${currentStep} of ${STEPS.length}`}</p>
+            <h1>Cover Letter Agent</h1>
+          </div>
         </div>
-        <p>{appMode === "intake" ? "User intake setup before pipeline." : "Guided 5-step workflow for cover letter generation."}</p>
+        <p className="headerDescription">
+          {appMode === "intake"
+            ? "Connect a model and add your source material to begin."
+            : "Build a tailored, evidence-grounded application one step at a time."}
+        </p>
       </header>
 
       <div className="layoutShell">
@@ -1585,63 +1590,88 @@ function App() {
         </div>
       </div>
 
-      {appMode === "pipeline" && (
-        <>
-          <button
-            type="button"
-            className={`navOverlay ${isSideRailOpen ? "open" : ""}`}
-            aria-label="Close step navigation"
-            onClick={() => setIsSideRailOpen(false)}
-          />
+      <>
+        <button
+          type="button"
+          className={`navOverlay ${isSideRailOpen ? "open" : ""}`}
+          aria-label="Close navigation"
+          onClick={() => setIsSideRailOpen(false)}
+        />
 
-          <aside className={`leftDrawer ${isSideRailOpen ? "open" : ""}`} aria-hidden={!isSideRailOpen}>
-            <div className="leftDrawerBody">
-              <div>
-                <div className="leftDrawerHeader">
-                  <h2>Steps</h2>
-                  <button
-                    type="button"
-                    className="leftDrawerClose"
-                    onClick={() => setIsSideRailOpen(false)}
-                    aria-label="Close step navigation"
-                  >
-                    x
-                  </button>
+        <aside className={`leftDrawer ${isSideRailOpen ? "open" : ""}`} aria-label="Application navigation">
+          <div className="leftDrawerBody">
+            <div>
+              <div className="leftDrawerBrand">
+                <span className="brandMark" aria-hidden="true">CL</span>
+                <div>
+                  <p>Cover Letter Agent</p>
+                  <span>Private drafting workspace</span>
                 </div>
-                <WizardStepper
-                  steps={STEPS as unknown as Array<{ id: number; title: string }>}
-                  currentStep={currentStep}
-                  onSelectStep={goToStep}
-                  canAccessStep={canAccessStep}
-                />
+                <button
+                  type="button"
+                  className="leftDrawerClose"
+                  onClick={() => setIsSideRailOpen(false)}
+                  aria-label="Close navigation"
+                >
+                  ×
+                </button>
               </div>
 
-              <div className="drawerSettings">
-                <h3>Settings</h3>
-                <label>
-                  Provider
-                  <select value={selectedProvider} onChange={(e) => setSelectedProvider(e.target.value as ModelProvider)}>
-                    <option value="ollama">Local Ollama</option>
-                    <option value="openai">OpenAI</option>
-                  </select>
-                </label>
-                <label>
-                  Model
-                  <select value={selectedModel} onChange={(e) => updateSelectedModel(e.target.value)}>
-                    {MODEL_OPTIONS[selectedProvider].map((model) => (
-                      <option key={model} value={model}>{model}</option>
-                    ))}
-                  </select>
-                </label>
-                {selectedProvider === "openai" && !openaiConfigured && (
-                  <p className="warningText">OpenAI key is not configured. Switch to Intake to bind key.</p>
-                )}
-                <button type="button" onClick={() => setAppMode("intake")}>Back to Intake</button>
-              </div>
+              {appMode === "pipeline" ? (
+                <>
+                  <div className="leftDrawerHeader">
+                    <h2>Workflow</h2>
+                  </div>
+                  <WizardStepper
+                    steps={STEPS as unknown as Array<{ id: number; title: string }>}
+                    currentStep={currentStep}
+                    onSelectStep={goToStep}
+                    canAccessStep={canAccessStep}
+                  />
+                </>
+              ) : (
+                <div className="intakeNavCard" aria-current="step">
+                  <span className="intakeNavIcon">1</span>
+                  <div>
+                    <strong>Workspace setup</strong>
+                    <span>Model and source files</span>
+                  </div>
+                </div>
+              )}
             </div>
-          </aside>
-        </>
-      )}
+
+            <div className="drawerFooter">
+              {appMode === "pipeline" && (
+                <div className="drawerSettings">
+                  <h3>Model settings</h3>
+                  <label>
+                    Provider
+                    <select value={selectedProvider} onChange={(e) => setSelectedProvider(e.target.value as ModelProvider)}>
+                      <option value="ollama">Local Ollama</option>
+                      <option value="openai">OpenAI</option>
+                    </select>
+                  </label>
+                  <label>
+                    Model
+                    <select value={selectedModel} onChange={(e) => updateSelectedModel(e.target.value)}>
+                      {MODEL_OPTIONS[selectedProvider].map((model) => (
+                        <option key={model} value={model}>{model}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {selectedProvider === "openai" && !openaiConfigured && (
+                    <p className="warningText">OpenAI key is not configured. Switch to Intake to bind key.</p>
+                  )}
+                  <button type="button" onClick={() => setAppMode("intake")}>Back to Intake</button>
+                </div>
+              )}
+              <p className="sidebarPrivacy">
+                Your browser stores workflow data. Content only leaves your device when you choose a hosted model.
+              </p>
+            </div>
+          </div>
+        </aside>
+      </>
 
       {showValidationDialog && generationBlockingItems.length > 0 && (
         <div className="validationModalBackdrop" onClick={() => setShowValidationDialog(false)}>
@@ -1680,24 +1710,24 @@ function App() {
         </div>
       )}
 
-      <section className="panel">
-        <h2>Debug Output (Draft)</h2>
-        <textarea readOnly value={rawOutput} rows={6} placeholder="Draft model output..." />
-      </section>
-
-      <section className="panel">
-        <h2>Debug Output (Memory)</h2>
-        <textarea readOnly value={rawMemoryOutput} rows={6} placeholder="Memory model output..." />
-      </section>
-
-      <section className="panel">
-        <h2>Debug Output (Interview Tips)</h2>
-        <textarea readOnly value={rawInterviewOutput} rows={6} placeholder="Interview tips model output..." />
-      </section>
-
-      <section className="panel">
+      <details className="panel devPanel">
+        <summary>Developer output</summary>
+        <div className="debugGrid">
+          <label>
+            Draft response
+            <textarea readOnly value={rawOutput} rows={6} placeholder="Draft model output..." />
+          </label>
+          <label>
+            Memory response
+            <textarea readOnly value={rawMemoryOutput} rows={6} placeholder="Memory model output..." />
+          </label>
+          <label>
+            Interview tips response
+            <textarea readOnly value={rawInterviewOutput} rows={6} placeholder="Interview tips model output..." />
+          </label>
+        </div>
         <p className="muted">Last draft fingerprint: {lastDraftKey ? "generated" : "none"} | Last tips fingerprint: {lastTipsKey ? "generated" : "none"}</p>
-      </section>
+      </details>
     </div>
   );
 }

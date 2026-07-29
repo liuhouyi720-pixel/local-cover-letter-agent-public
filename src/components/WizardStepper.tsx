@@ -25,7 +25,7 @@ export function WizardStepper(props: {
             onClick={() => props.onSelectStep?.(step.id)}
             disabled={isDisabled}
           >
-            <div className="wizardStepBadge">{isDone ? "OK" : step.id}</div>
+            <div className="wizardStepBadge">{isDone ? "✓" : step.id}</div>
             <div className="wizardStepText">{step.title}</div>
           </button>
         );
