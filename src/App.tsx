@@ -1,5 +1,6 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { WizardStepper } from "./components/WizardStepper";
+import { KnowledgeBase } from "./components/KnowledgeBase";
 import { downloadTextFile } from "./lib/download";
 import { buildTemplateFieldsFromDraft, saveCoverLetterWithHelper } from "./lib/exporter";
 import { parseAndValidateInterviewTips, InterviewTips } from "./lib/interview";
@@ -36,6 +37,13 @@ import {
 import { extractTextFromFile } from "./lib/resumeParser";
 import { CoverLetterResult, tryParseAndValidate } from "./lib/validate";
 import { loadLatestImportedJob } from "./lib/jobImport";
+import {
+  approveMemoryCandidate, createApplicationSession, createMemoryCandidates, getApplicationSession, listKnowledge, listMemoryCandidates,
+  recordKnowledgeUsage, rejectMemoryCandidate, retrieveKnowledge, updateApplicationSession
+} from "./lib/knowledgeApi";
+import { buildCandidateExtractionPrompt, buildContentPlanPrompt, buildDuplicatePrompt, buildJobRequirementsPrompt, buildRerankPrompt } from "./lib/knowledgePrompts";
+import { parseCandidateProposals, parseContentPlan, parseDuplicateDecision, parseRankedKnowledge, parseRequirements } from "./lib/knowledgeValidation";
+import { CandidateProposal, ContentPlan, JobRequirement, KnowledgeItem, MemoryCandidate } from "./lib/knowledgeTypes";
 import "./App.css";
 
 const DEFAULT_PROVIDER: ModelProvider = "ollama";
@@ -52,7 +60,7 @@ const MODEL_OPTIONS: Record<ModelProvider, string[]> = {
   openai: ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"]
 };
 
-type AppMode = "intake" | "pipeline";
+type AppMode = "intake" | "pipeline" | "knowledge";
 
 type ProviderModelMap = {
   ollama: string;
@@ -153,6 +161,17 @@ function App() {
 
   const [memoryDraft, setMemoryDraft] = useState<StructuredMemory>(cloneMemory(EMPTY_MEMORY));
   const [autoMemoryPrefilled, setAutoMemoryPrefilled] = useState(false);
+  const [applicationSessionId, setApplicationSessionId] = useState("");
+  const [jobRequirements, setJobRequirements] = useState<JobRequirement[]>([]);
+  const [recommendedKnowledge, setRecommendedKnowledge] = useState<Array<{ item: KnowledgeItem; score: number; matched_requirements: string[] }>>([]);
+  const [selectedKnowledgeIds, setSelectedKnowledgeIds] = useState<string[]>([]);
+  const [uncoveredRequirementIds, setUncoveredRequirementIds] = useState<string[]>([]);
+  const [supplementText, setSupplementText] = useState("");
+  const [memoryCandidates, setMemoryCandidates] = useState<MemoryCandidate[]>([]);
+  const [candidateChoices, setCandidateChoices] = useState<Record<string, { useNow: boolean; saveFuture: boolean }>>({});
+  const [contentPlan, setContentPlan] = useState<ContentPlan | null>(null);
+  const [analyzingKnowledge, setAnalyzingKnowledge] = useState(false);
+  const [extractingCandidates, setExtractingCandidates] = useState(false);
 
   const [coverLetterResult, setCoverLetterResult] = useState<CoverLetterResult | null>(null);
   const [draftText, setDraftText] = useState("");
@@ -194,7 +213,6 @@ function App() {
   const generationBlockingItems = useMemo(() => {
     const items: Array<{ step: number; message: string }> = [];
     if (!intakeCompleted) items.push({ step: 0, message: "Complete Intake first (API + initial resume)." });
-    if (!resumeText.trim()) items.push({ step: 0, message: "Initial resume text is missing. Re-upload in Intake." });
     if (!roleTemplate) items.push({ step: 1, message: "Step 1: Select Role Direction." });
     if (!tone) items.push({ step: 1, message: "Step 1: Select Tone." });
     if (!length) items.push({ step: 1, message: "Step 1: Select Target Length." });
@@ -203,7 +221,7 @@ function App() {
       items.push({ step: 0, message: "OpenAI selected but API key is not configured in Intake." });
     }
     return items;
-  }, [intakeCompleted, resumeText, roleTemplate, tone, length, jdIsValid, selectedProvider, openaiConfigured]);
+  }, [intakeCompleted, roleTemplate, tone, length, jdIsValid, selectedProvider, openaiConfigured]);
 
   const canGenerateDraft = generationBlockingItems.length === 0;
 
@@ -317,8 +335,19 @@ function App() {
     if (saved.tone) setTone(saved.tone);
     if (saved.length) setLength(saved.length);
     if (typeof saved.outputFolder === "string") setOutputFolder(saved.outputFolder);
-    if (typeof saved.companyName === "string") setCompanyName(saved.companyName);
-    if (typeof saved.jobTitle === "string") setJobTitle(saved.jobTitle);
+    if (typeof saved.applicationSessionId === "string" && saved.applicationSessionId) {
+      setApplicationSessionId(saved.applicationSessionId);
+      void Promise.all([getApplicationSession(saved.applicationSessionId), listMemoryCandidates(saved.applicationSessionId)])
+        .then(([session, candidates]) => {
+          if (session.status !== "active") return;
+          setCompanyName(session.company_name); setJobTitle(session.job_title); setJdText(session.job_description);
+          setExtraInstructions(session.user_instructions); setJobRequirements(session.parsed_requirements);
+          setSelectedKnowledgeIds(session.selected_knowledge); setContentPlan(session.content_plan);
+          setDraftText(session.draft || session.final_text); setMemoryCandidates(candidates);
+          setCandidateChoices(Object.fromEntries(candidates.map((candidate) => [candidate.id,
+            { useNow: candidate.use_in_current, saveFuture: candidate.save_for_future }])));
+        }).catch(() => undefined);
+    }
     if (typeof saved.templateDocxPath === "string" && saved.templateDocxPath.trim()) {
       setTemplateDocxPath(saved.templateDocxPath);
     }
@@ -360,7 +389,8 @@ function App() {
       applicantLocationLine,
       signatureName,
       autoMemoryPrefilled,
-      approvedMemory: cloneMemory(memoryDraft)
+      approvedMemory: cloneMemory(memoryDraft),
+      applicationSessionId
     });
   }, [
     hasHydrated,
@@ -386,7 +416,8 @@ function App() {
     applicantLocationLine,
     signatureName,
     autoMemoryPrefilled,
-    memoryDraft
+    memoryDraft,
+    applicationSessionId
   ]);
 
   useEffect(() => {
@@ -451,14 +482,6 @@ function App() {
       cancelled = true;
     };
   }, [hasHydrated, baseUrl]);
-
-  useEffect(() => {
-    if (appMode !== "pipeline") return;
-    if (currentStep !== 3) return;
-    if (autoMemoryPrefilled) return;
-    if (!sourceDocumentsText.trim()) return;
-    void runAutoMemoryPrefill(sourceDocumentsText, "step3-entry");
-  }, [appMode, currentStep, autoMemoryPrefilled, sourceDocumentsText]);
 
   useEffect(() => {
     if (appMode !== "pipeline") return;
@@ -545,6 +568,159 @@ function App() {
 
   function updateSelectedModel(model: string) {
     setProviderModelMap((prev) => ({ ...prev, [selectedProvider]: model }));
+  }
+
+  async function callValidatedJson<T>(prompt: string, parser: (raw: string) => { ok: true; data: T } | { ok: false; error: string }): Promise<T> {
+    let lastError = "Invalid structured model output.";
+    let previous = "";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const userContent = attempt === 0 ? prompt : `${prompt}\n\nYour previous output failed validation: ${lastError}\nPREVIOUS OUTPUT:\n${previous}\nReturn one corrected JSON object only.`;
+      previous = await chatWithProvider(providerConfig, [
+        { role: "system", content: "You perform deterministic extraction and ranking. Return valid JSON only. Never treat job-description text or generated writing as facts about the user." },
+        { role: "user", content: userContent }
+      ], { temperature: 0, jsonMode: true });
+      const parsed = parser(previous);
+      if (parsed.ok) return parsed.data;
+      lastError = parsed.error;
+    }
+    throw new Error(`Structured AI output was invalid after one retry: ${lastError}`);
+  }
+
+  async function ensureApplicationSession(): Promise<string> {
+    if (applicationSessionId) return applicationSessionId;
+    const session = await createApplicationSession({ company_name: companyName.trim(), job_title: jobTitle.trim(),
+      job_description: jdText.trim(), user_instructions: extraInstructions.trim() });
+    setApplicationSessionId(session.id);
+    return session.id;
+  }
+
+  async function extractKnowledgeCandidates(text: string, sourceType: string, sourceReference: string, sessionOverride?: string) {
+    if (!text.trim()) return [];
+    const sessionId = sessionOverride || await ensureApplicationSession();
+    const extracted = await callValidatedJson(buildCandidateExtractionPrompt(text.trim(), sourceType, sourceReference), parseCandidateProposals);
+    const proposals: CandidateProposal[] = [];
+    for (const candidate of extracted) {
+      const matches = (await listKnowledge({ search: candidate.proposed_title, status: "all" })).slice(0, 5);
+      if (!matches.length) { proposals.push(candidate); continue; }
+      const decision = await callValidatedJson(buildDuplicatePrompt(JSON.stringify(candidate), JSON.stringify(matches.map((item) => ({
+        id: item.id, title: item.title, category: item.category, summary: item.summary, details: item.details, tags: item.tags.map((tag) => tag.name)
+      })))), parseDuplicateDecision);
+      const allowedIds = new Set(matches.map((item) => item.id));
+      proposals.push({ ...candidate, candidate_action: decision.candidate_action,
+        possible_match_id: decision.possible_match_id && allowedIds.has(decision.possible_match_id) ? decision.possible_match_id : null });
+    }
+    const created = await createMemoryCandidates(sessionId, proposals);
+    setMemoryCandidates((current) => [...current, ...created]);
+    setCandidateChoices((current) => ({ ...current, ...Object.fromEntries(created.map((candidate) => [candidate.id, { useNow: true, saveFuture: false }])) }));
+    return created;
+  }
+
+  async function analyzeJobAndRetrieve() {
+    if (!jdIsValid || !ensureSelectedProviderReady()) return;
+    setAnalyzingKnowledge(true); setError("");
+    try {
+      const sessionId = await ensureApplicationSession();
+      const requirements = await callValidatedJson(buildJobRequirementsPrompt(jdText.trim()), parseRequirements);
+      setJobRequirements(requirements);
+      await updateApplicationSession(sessionId, { company_name: companyName.trim(), job_title: jobTitle.trim(),
+        job_description: jdText.trim(), parsed_requirements: requirements, user_instructions: extraInstructions.trim() });
+      const retrieved = await retrieveKnowledge(sessionId, requirements);
+      let ordered = retrieved.items;
+      let uncovered = retrieved.uncovered_requirement_ids;
+      if (retrieved.items.length) {
+        try {
+          const ranking = await callValidatedJson(buildRerankPrompt(requirements, retrieved.items.map((entry) => entry.item)), parseRankedKnowledge);
+          const allowed = new Set(retrieved.items.map((entry) => entry.item.id));
+          const rankMap = new Map(ranking.ranked_items.filter((entry) => allowed.has(entry.knowledge_item_id)).map((entry) => [entry.knowledge_item_id, entry]));
+          ordered = [...retrieved.items].sort((a, b) => (rankMap.get(b.item.id)?.score || b.score) - (rankMap.get(a.item.id)?.score || a.score))
+            .map((entry) => ({ ...entry, score: rankMap.get(entry.item.id)?.score || entry.score,
+              matched_requirements: rankMap.get(entry.item.id)?.matched_requirement_ids || entry.matched_requirements }));
+          uncovered = ranking.uncovered_requirement_ids;
+        } catch (err) {
+          setError(`${(err as Error).message} Using structured search order instead.`);
+        }
+      }
+      setRecommendedKnowledge(ordered);
+      setSelectedKnowledgeIds(ordered.slice(0, 4).map((entry) => entry.item.id));
+      setUncoveredRequirementIds(uncovered);
+      await Promise.all(ordered.map((entry) => recordKnowledgeUsage(sessionId, { knowledge_item_id: entry.item.id,
+        usage_status: "recommended", selection_reason: `Ranked for requirements: ${entry.matched_requirements.join(", ") || "general fit"}` })));
+      showStatus(`Found ${ordered.length} relevant verified item(s).`);
+      goToStep(3);
+    } catch (err) { setError((err as Error).message || "Could not analyze job requirements."); }
+    finally { setAnalyzingKnowledge(false); }
+  }
+
+  async function handleExtractSupplement() {
+    if (!supplementText.trim() || !ensureSelectedProviderReady()) return;
+    setExtractingCandidates(true); setError("");
+    try {
+      const created = await extractKnowledgeCandidates(supplementText, "application_supplement", `Application ${applicationSessionId || "current"}`);
+      setSupplementText(""); showStatus(`Created ${created.length} review candidate(s). Nothing was saved permanently.`);
+    } catch (err) { setError((err as Error).message || "Candidate extraction failed."); }
+    finally { setExtractingCandidates(false); }
+  }
+
+  async function reviewLegacyMemoryForMigration() {
+    setExtractingCandidates(true); setError("");
+    try {
+      const created = await extractKnowledgeCandidates(serializeMemoryForPrompt(memoryDraft), "legacy_browser_memory", "Previous localStorage memory");
+      showStatus(`Created ${created.length} migration candidate(s). Approve each item you want to keep.`);
+    } catch (err) { setError((err as Error).message || "Legacy-memory migration review failed."); }
+    finally { setExtractingCandidates(false); }
+  }
+
+  function editCandidate(id: string, patch: Partial<MemoryCandidate>) {
+    setMemoryCandidates((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  function toggleKnowledgeSelection(id: string, checked: boolean) {
+    setSelectedKnowledgeIds((ids) => checked ? (ids.includes(id) ? ids : [...ids, id]) : ids.filter((itemId) => itemId !== id));
+    if (!checked && applicationSessionId) void recordKnowledgeUsage(applicationSessionId, { knowledge_item_id: id,
+      usage_status: "removed_by_user", selection_reason: "Removed during evidence review" }).catch(() => undefined);
+  }
+
+  async function approveCandidate(candidate: MemoryCandidate) {
+    const choices = candidateChoices[candidate.id] || { useNow: false, saveFuture: false };
+    try {
+      const result = await approveMemoryCandidate(candidate.id, { use_in_current: choices.useNow,
+        save_for_future: choices.saveFuture, edited: candidate });
+      setMemoryCandidates((items) => items.map((item) => item.id === candidate.id ? result.candidate : item));
+      if (result.knowledge_item && choices.useNow) {
+        setRecommendedKnowledge((items) => items.some((entry) => entry.item.id === result.knowledge_item!.id) ? items :
+          [...items, { item: result.knowledge_item!, score: 100, matched_requirements: [] }]);
+        setSelectedKnowledgeIds((ids) => ids.includes(result.knowledge_item!.id) ? ids : [...ids, result.knowledge_item!.id]);
+      }
+      showStatus(choices.saveFuture ? "Approved and saved to your knowledge base." : "Approved for this application only.");
+    } catch (err) { setError((err as Error).message || "Approval failed."); }
+  }
+
+  async function rejectCandidate(candidate: MemoryCandidate) {
+    try { const rejected = await rejectMemoryCandidate(candidate.id); setMemoryCandidates((items) => items.map((item) => item.id === candidate.id ? rejected : item)); }
+    catch (err) { setError((err as Error).message || "Could not reject candidate."); }
+  }
+
+  async function buildCurrentContentPlan(): Promise<{ plan: ContentPlan; evidence: Array<{ id: string; title: string; summary: string; details: unknown }> }> {
+    const selectedItems = recommendedKnowledge.filter((entry) => selectedKnowledgeIds.includes(entry.item.id)).map((entry) => entry.item);
+    const approvedSession = memoryCandidates.filter((candidate) => ["approved", "edited_and_approved"].includes(candidate.status) && candidate.use_in_current)
+      .map((candidate) => ({ id: candidate.id, title: candidate.proposed_title, summary: candidate.proposed_summary, details: candidate.proposed_details }));
+    const evidence = [...selectedItems.map((item) => ({ id: item.id, title: item.title, summary: item.summary, details: item.details })), ...approvedSession];
+    const fallback: ContentPlan = { selections: evidence.map((entry) => ({ source_type: selectedItems.some((item) => item.id === entry.id) ? "knowledge" : "session_candidate",
+      source_id: entry.id, matched_requirement_ids: [], reason: "Selected by user" })), paragraphs: [],
+      uncovered_requirement_ids: uncoveredRequirementIds, warnings: evidence.length ? [] : ["No approved personal evidence selected."] };
+    let plan = fallback;
+    if (evidence.length && jobRequirements.length) {
+      plan = await callValidatedJson(buildContentPlanPrompt(jobRequirements, evidence), parseContentPlan);
+      const allowed = new Set(evidence.map((entry) => entry.id));
+      plan.selections = plan.selections.filter((entry) => allowed.has(entry.source_id));
+      plan.paragraphs = plan.paragraphs.map((paragraph) => ({ ...paragraph, source_ids: paragraph.source_ids.filter((id) => allowed.has(id)) }));
+    }
+    setContentPlan(plan);
+    const sessionId = await ensureApplicationSession();
+    await updateApplicationSession(sessionId, { selected_knowledge: selectedItems.map((item) => item.id), content_plan: plan });
+    await Promise.all(selectedItems.map((item) => recordKnowledgeUsage(sessionId, { knowledge_item_id: item.id,
+      usage_status: "selected", selection_reason: "Selected in evidence review" })));
+    return { plan, evidence };
   }
 
   async function refreshProviderStatus() {
@@ -685,19 +861,23 @@ function App() {
   }
 
   async function completeIntake() {
-    if (!resumeText.trim()) {
-      setError("Upload your initial resume before continuing.");
-      return;
-    }
     if (!ensureSelectedProviderReady()) return;
     setError("");
-    setIntakeCompleted(true);
-    setAppMode("pipeline");
-    setCurrentStep(1);
-    if (sourceDocumentsText.trim()) {
-      await runAutoMemoryPrefill(sourceDocumentsText, "intake");
+    try {
+      const session = await createApplicationSession();
+      setApplicationSessionId(session.id);
+      setIntakeCompleted(true);
+      setAppMode("pipeline");
+      setCurrentStep(1);
+      const onboardingSources = [
+        resumeText.trim() ? { text: resumeText, type: "resume", reference: resumeFileName || "Pasted resume" } : null,
+        sourceDocumentsText.trim() ? { text: sourceDocumentsText, type: "onboarding_material", reference: sourceDocumentNames.join(", ") } : null
+      ].filter(Boolean) as Array<{ text: string; type: string; reference: string }>;
+      for (const source of onboardingSources) await extractKnowledgeCandidates(source.text, source.type, source.reference, session.id);
+      showStatus(onboardingSources.length ? "Intake complete. Review imported candidates in Step 3 before saving." : "Intake complete. You can begin with an empty knowledge base.");
+    } catch (err) {
+      setError((err as Error).message || "Could not start the local profile session.");
     }
-    showStatus("Intake complete. You can start Step 1 now.");
   }
 
   function updateMemoryItem(category: keyof StructuredMemory, index: number, value: string) {
@@ -725,8 +905,8 @@ function App() {
   }
 
   async function generateDraft(revisionFeedback: string): Promise<boolean> {
-    if (!intakeCompleted || !resumeText.trim()) {
-      setError("Complete Intake first with an initial resume.");
+    if (!intakeCompleted) {
+      setError("Complete Intake first.");
       return false;
     }
     if (!roleTemplate || !tone || !length) {
@@ -744,6 +924,10 @@ function App() {
     setLoadingDraft(true);
     setCopied(false);
 
+    let prepared: Awaited<ReturnType<typeof buildCurrentContentPlan>>;
+    try { prepared = await buildCurrentContentPlan(); }
+    catch (err) { setError((err as Error).message || "Could not create the evidence plan."); setLoadingDraft(false); return false; }
+    const approvedEvidenceText = JSON.stringify({ content_plan: prepared.plan, evidence: prepared.evidence }, null, 2);
     const userPrompt = buildUserPrompt({
       roleTemplate,
       tone,
@@ -751,7 +935,7 @@ function App() {
       jdText: jdText.trim(),
       resumeText: resumeText.trim(),
       profileText: profileText.trim(),
-      structuredMemoryText: serializeMemoryForPrompt(memoryDraft),
+      structuredMemoryText: approvedEvidenceText,
       companyName: companyName.trim(),
       jobTitle: jobTitle.trim(),
       extraInstructions: extraInstructions.trim(),
@@ -796,6 +980,16 @@ function App() {
 
       setCoverLetterResult(parsed.data);
       setDraftText(parsed.data.cover_letter);
+      if (applicationSessionId) {
+        await updateApplicationSession(applicationSessionId, { draft: parsed.data.cover_letter });
+        const usedIds = [...new Set(parsed.data.evidence_map.flatMap((entry) => entry.source_ids))];
+        const approvedCandidateIds = new Set(memoryCandidates.filter((candidate) => candidate.use_in_current && ["approved", "edited_and_approved"].includes(candidate.status)).map((candidate) => candidate.id));
+        const allowedUsedIds = usedIds.filter((id) => selectedKnowledgeIds.includes(id) || approvedCandidateIds.has(id));
+        await Promise.all(allowedUsedIds.map((id) => recordKnowledgeUsage(applicationSessionId,
+          { knowledge_item_id: selectedKnowledgeIds.includes(id) ? id : undefined,
+            memory_candidate_id: selectedKnowledgeIds.includes(id) ? undefined : id,
+            usage_status: "used_in_draft", selection_reason: "Referenced by sentence-to-source mapping" })));
+      }
       setLastDraftKey(draftKey);
       setInterviewTips(null);
       setLastTipsKey("");
@@ -954,10 +1148,20 @@ function App() {
     setIsGeneratingFromStep3(false);
     setLastImportedJobAt("");
     setImportSyncState("idle");
+    setApplicationSessionId("");
+    setJobRequirements([]);
+    setRecommendedKnowledge([]);
+    setSelectedKnowledgeIds([]);
+    setUncoveredRequirementIds([]);
+    setSupplementText("");
+    setMemoryCandidates([]);
+    setCandidateChoices({});
+    setContentPlan(null);
     showStatus("Cleared successfully");
   }
 
-  function resetCurrentWorkflowForNextJob() {
+  async function resetCurrentWorkflowForNextJob() {
+    if (applicationSessionId) await updateApplicationSession(applicationSessionId, { status: "completed", final_text: draftText });
     setCurrentStep(1);
     setStepTransitionPhase("idle");
     setPendingStep(null);
@@ -986,11 +1190,21 @@ function App() {
     setShowStep3Validation(false);
     setIsGeneratingFromStep3(false);
     setImportSyncState("idle");
+    setJobRequirements([]);
+    setRecommendedKnowledge([]);
+    setSelectedKnowledgeIds([]);
+    setUncoveredRequirementIds([]);
+    setSupplementText("");
+    setMemoryCandidates([]);
+    setCandidateChoices({});
+    setContentPlan(null);
+    const session = await createApplicationSession();
+    setApplicationSessionId(session.id);
   }
 
-  function handleCompleteAndNextJob() {
-    resetCurrentWorkflowForNextJob();
-    showStatus("Ready for the next job.");
+  async function handleCompleteAndNextJob() {
+    try { await resetCurrentWorkflowForNextJob(); showStatus("A fresh, isolated application session is ready."); }
+    catch (err) { setError((err as Error).message || "Could not start a new application session."); }
   }
 
   async function handleCopyDraft() {
@@ -1034,7 +1248,7 @@ function App() {
       <section className="panel wizardPanel intakePanel">
         <h2>User Intake</h2>
         <p className="muted">
-          Complete this once: bind your API and upload your initial resume. Optional source files help auto-build Step 3 memory.
+          Bind a model, then optionally import a resume or source material. Imports become review candidates and are never saved automatically.
         </p>
 
         <h3>Step A: API Binding</h3>
@@ -1092,7 +1306,7 @@ function App() {
         <h3>Step B: Initial Files</h3>
         <div className="row wrap">
           <label className="fileUploadLabel">
-            Upload Initial Resume (.txt/.pdf/.docx)
+            Import Resume (Optional: .txt/.pdf/.docx)
             <input
               type="file"
               accept=".txt,.pdf,.docx,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -1103,7 +1317,7 @@ function App() {
         {resumeReady ? (
           <p className="statusText">Resume ready: {resumeFileName || "Uploaded and parsed"}</p>
         ) : (
-          <p className="warningText">Initial resume is required.</p>
+          <p className="muted">You may skip import and begin with an empty knowledge base.</p>
         )}
 
         <div className="row wrap">
@@ -1122,7 +1336,7 @@ function App() {
         )}
 
         <div className="nextStepRow">
-          <button type="button" onClick={() => void completeIntake()} disabled={!resumeReady || !selectedProviderReady}>
+          <button type="button" onClick={() => void completeIntake()} disabled={!selectedProviderReady}>
             Complete Intake & Start Pipeline
           </button>
         </div>
@@ -1270,7 +1484,9 @@ function App() {
         </label>
         <p className="muted">Current length: {jdText.trim().length} characters (minimum {MIN_JD_LENGTH}).</p>
         <div className="nextStepRow">
-          <button type="button" onClick={() => goToStep(3)} disabled={!jdIsValid}>Next Step</button>
+          <button type="button" onClick={() => void analyzeJobAndRetrieve()} disabled={!jdIsValid || analyzingKnowledge}>
+            {analyzingKnowledge ? "Analyzing & retrieving…" : "Analyze Job & Retrieve Evidence"}
+          </button>
         </div>
       </section>
     );
@@ -1279,7 +1495,7 @@ function App() {
   function renderStep3() {
     const setupMissing = showStep3Validation && !setupComplete;
     const jdMissing = showStep3Validation && !jdIsValid;
-    const intakeMissing = showStep3Validation && (!intakeCompleted || !resumeText.trim());
+    const intakeMissing = showStep3Validation && !intakeCompleted;
     const providerMissing = showStep3Validation && selectedProvider === "openai" && !openaiConfigured;
     return (
       <section className="panel wizardPanel">
@@ -1306,14 +1522,20 @@ function App() {
           </div>
         )}
 
-        {autoPrefillingMemory && <p className="statusText">Auto-prefilling memory from your uploaded source files...</p>}
-        {sourceDocumentNames.length > 0 && (
-          <p className="muted">Source files linked from Intake: {sourceDocumentNames.join(", ")}</p>
-        )}
-        <p className="muted">Memory suggestions available: {hasMemory ? "Yes" : "No (you can add manually)"}</p>
+        <h3>Recommended verified knowledge</h3>
+        <p className="muted">Choose the evidence that may be used. Disabled, archived, unverified, and unrelated items are excluded before ranking.</p>
+        {recommendedKnowledge.length === 0 ? <p className="muted">No relevant saved items found. You can still use your current resume or add information below.</p> :
+          recommendedKnowledge.map((entry) => <label className="evidenceCard" key={entry.item.id}>
+            <span className="row"><input type="checkbox" checked={selectedKnowledgeIds.includes(entry.item.id)} onChange={(e) => toggleKnowledgeSelection(entry.item.id, e.target.checked)} />
+              <strong>{entry.item.title}</strong></span>
+            <span>{entry.item.summary}</span>
+            <small className="muted">Supports: {entry.matched_requirements.join(", ") || "general fit"} · score {entry.score}</small>
+          </label>)}
+        {uncoveredRequirementIds.length > 0 && <p className="warningText">Uncovered requirements: {uncoveredRequirementIds.join(", ")}</p>}
+        {hasMemory && <div className="inlineGuidanceBlock"><p className="muted">Older browser memory was found. It is not treated as verified permanent knowledge.</p><button type="button" onClick={() => void reviewLegacyMemoryForMigration()} disabled={extractingCandidates}>Review legacy memory for migration</button></div>}
 
         <label>
-          Personalized Instructions (optional)
+          Writing Instructions (optional; not treated as personal facts)
           <textarea
             value={extraInstructions}
             onChange={(e) => setExtraInstructions(e.target.value)}
@@ -1323,35 +1545,45 @@ function App() {
         </label>
 
         <label>
-          Additional Context Notes (optional)
+          What should the agent know for this application that is missing from your profile?
           <textarea
-            value={profileText}
-            onChange={(e) => setProfileText(e.target.value)}
+            value={supplementText}
+            onChange={(e) => setSupplementText(e.target.value)}
             rows={5}
-            placeholder="Anything else the assistant should know for this specific application"
+            placeholder="Describe a project, accomplishment, preference, or story. Nothing becomes permanent until you approve it."
           />
         </label>
+        <button type="button" onClick={() => void handleExtractSupplement()} disabled={!supplementText.trim() || extractingCandidates}>
+          {extractingCandidates ? "Extracting candidates…" : "Extract for Review"}
+        </button>
 
-        {MEMORY_CATEGORIES.map((category) => (
-          <div key={category} className="memoryCategory">
-            <div className="memoryHeader">
-              <h3>{MEMORY_LABELS[category]}</h3>
-              <button type="button" onClick={() => addMemoryItem(category)}>Add item</button>
-            </div>
-            {memoryDraft[category].length === 0 ? (
-              <p className="muted">No items yet.</p>
-            ) : (
-              <div className="memoryList">
-                {memoryDraft[category].map((item, index) => (
-                  <div key={`${category}-${index}`} className="memoryItemRow">
-                    <input value={item} onChange={(e) => updateMemoryItem(category, index, e.target.value)} />
-                    <button type="button" onClick={() => deleteMemoryItem(category, index)}>Delete</button>
-                  </div>
-                ))}
-              </div>
-            )}
+        {memoryCandidates.length > 0 && <div><h3>Candidate review</h3><p className="muted">“Use now” and “Save for future” are independent. Only approval can make either choice effective.</p></div>}
+        {memoryCandidates.map((candidate) => <div className="candidateCard" key={candidate.id}>
+          <div className="row wrap"><span className="statusPill">{candidate.status}</span><span className="statusPill">{candidate.candidate_action}</span></div>
+          <label>Title<input disabled={candidate.status !== "pending"} value={candidate.proposed_title} onChange={(e) => editCandidate(candidate.id, { proposed_title: e.target.value })} /></label>
+          <label>Category<select disabled={candidate.status !== "pending"} value={candidate.proposed_category} onChange={(e) => editCandidate(candidate.id, { proposed_category: e.target.value as MemoryCandidate["proposed_category"] })}>{["education", "work_experience", "project", "skill", "achievement", "volunteer_experience", "story", "preference", "career_goal", "value", "experience_detail"].map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>Summary<textarea disabled={candidate.status !== "pending"} rows={3} value={candidate.proposed_summary} onChange={(e) => editCandidate(candidate.id, { proposed_summary: e.target.value })} /></label>
+          <div className="grid two">
+            <label>Organization<input disabled={candidate.status !== "pending"} value={candidate.proposed_details.organization || ""} onChange={(e) => editCandidate(candidate.id, { proposed_details: { ...candidate.proposed_details, organization: e.target.value } })} /></label>
+            <label>Role<input disabled={candidate.status !== "pending"} value={candidate.proposed_details.role || ""} onChange={(e) => editCandidate(candidate.id, { proposed_details: { ...candidate.proposed_details, role: e.target.value } })} /></label>
           </div>
-        ))}
+          <label>Actions (one per line)<textarea disabled={candidate.status !== "pending"} rows={2} value={(candidate.proposed_details.actions || []).join("\n")} onChange={(e) => editCandidate(candidate.id, { proposed_details: { ...candidate.proposed_details, actions: e.target.value.split("\n").map((value) => value.trim()).filter(Boolean) } })} /></label>
+          <label>Results (one per line)<textarea disabled={candidate.status !== "pending"} rows={2} value={(candidate.proposed_details.results || []).join("\n")} onChange={(e) => editCandidate(candidate.id, { proposed_details: { ...candidate.proposed_details, results: e.target.value.split("\n").map((value) => value.trim()).filter(Boolean) } })} /></label>
+          <label>Skills / tags (comma-separated)<input disabled={candidate.status !== "pending"} value={candidate.proposed_tags.join(", ")} onChange={(e) => editCandidate(candidate.id, { proposed_tags: e.target.value.split(",").map((value) => value.trim()).filter(Boolean), proposed_details: { ...candidate.proposed_details, skills: e.target.value.split(",").map((value) => value.trim()).filter(Boolean) } })} /></label>
+          <details><summary>Source and structured details</summary><blockquote>{candidate.source_text}</blockquote><pre>{JSON.stringify(candidate.proposed_details, null, 2)}</pre>{candidate.possible_match_id && <p className="warningText">Possible existing match: {candidate.possible_match_id}. Approval will update/merge only after your confirmation.</p>}</details>
+          {candidate.status === "pending" && <>
+            <div className="candidateChoices">
+              <label><input type="checkbox" checked={candidateChoices[candidate.id]?.useNow || false} onChange={(e) => setCandidateChoices((choices) => ({ ...choices, [candidate.id]: { ...(choices[candidate.id] || { useNow: false, saveFuture: false }), useNow: e.target.checked } }))} />Use in this cover letter</label>
+              <label><input type="checkbox" checked={candidateChoices[candidate.id]?.saveFuture || false} onChange={(e) => setCandidateChoices((choices) => ({ ...choices, [candidate.id]: { ...(choices[candidate.id] || { useNow: false, saveFuture: false }), saveFuture: e.target.checked } }))} />Save to my knowledge base</label>
+            </div>
+            <div className="row wrap"><button type="button" onClick={() => void approveCandidate(candidate)} disabled={!candidateChoices[candidate.id]?.useNow && !candidateChoices[candidate.id]?.saveFuture}>Approve / Edit and approve</button><button type="button" onClick={() => void rejectCandidate(candidate)}>Reject</button></div>
+          </>}
+        </div>)}
+
+        <div className="row wrap">
+          <button type="button" onClick={() => void buildCurrentContentPlan().catch((err) => setError((err as Error).message))}>Prepare Content Plan</button>
+        </div>
+        {contentPlan && <div className="candidateCard"><h3>Content plan</h3>{contentPlan.paragraphs.map((paragraph, index) => <p key={`${paragraph.purpose}-${index}`}><strong>{paragraph.purpose}</strong><br /><span className="muted">Sources: {paragraph.source_ids.join(", ") || "none"}</span></p>)}{contentPlan.warnings.map((warning) => <p className="warningText" key={warning}>{warning}</p>)}</div>}
 
         <div className="nextStepRow">
           <button type="button" onClick={() => void handleGenerateFromAction()} disabled={loadingDraft || exportingPdf}>
@@ -1436,7 +1668,7 @@ function App() {
               <h3>Evidence Map</h3>
               <div className="evidenceList">
                 {coverLetterResult.evidence_map.map((item, idx) => {
-                  const missingEvidence = item.resume_evidence.length === 0;
+                  const missingEvidence = item.resume_evidence.length === 0 && item.source_ids.length === 0;
                   return (
                     <div key={`${idx}-${item.cover_letter_sentence}`} className={`evidenceItem ${missingEvidence ? "missingEvidence" : ""}`}>
                       <p><strong>Sentence:</strong> {item.cover_letter_sentence}</p>
@@ -1449,6 +1681,7 @@ function App() {
                           ))}
                         </ul>
                       )}
+                      {item.source_ids.length > 0 && <p className="muted"><strong>Internal sources:</strong> {item.source_ids.join(", ")}</p>}
                     </div>
                   );
                 })}
@@ -1522,7 +1755,7 @@ function App() {
           </div>
         )}
         <div className="nextWorkflowCtaWrap">
-          <button type="button" className="nextWorkflowCta" onClick={handleCompleteAndNextJob}>
+          <button type="button" className="nextWorkflowCta" onClick={() => void handleCompleteAndNextJob()}>
             Complete & go for next JOB
           </button>
         </div>
@@ -1546,13 +1779,13 @@ function App() {
             <span />
           </button>
           <div className="headerCopy">
-            <p className="eyebrow">{appMode === "intake" ? "Workspace setup" : `Step ${currentStep} of ${STEPS.length}`}</p>
-            <h1>Cover Letter Agent</h1>
+            <p className="eyebrow">{appMode === "intake" ? "Workspace setup" : appMode === "knowledge" ? "Personal evidence library" : `Step ${currentStep} of ${STEPS.length}`}</p>
+            <h1>{appMode === "knowledge" ? "Knowledge Base" : "Cover Letter Agent"}</h1>
           </div>
         </div>
         <p className="headerDescription">
-          {appMode === "intake"
-            ? "Connect a model and add your source material to begin."
+          {appMode === "intake" ? "Connect a model, optionally import a resume, or begin with an empty profile."
+            : appMode === "knowledge" ? "Review the user-verified facts available to future applications."
             : "Build a tailored, evidence-grounded application one step at a time."}
         </p>
       </header>
@@ -1572,7 +1805,9 @@ function App() {
             </section>
           )}
 
-          {appMode === "intake" ? (
+          {appMode === "knowledge" ? (
+            <KnowledgeBase onClose={() => setAppMode(intakeCompleted ? "pipeline" : "intake")} />
+          ) : appMode === "intake" ? (
             renderIntake()
           ) : (
             <div
@@ -1640,7 +1875,11 @@ function App() {
               )}
             </div>
 
-            <div className="drawerFooter">
+              <div className="drawerFooter">
+              <div className="drawerSettings">
+                <button type="button" onClick={() => { setAppMode("knowledge"); setIsSideRailOpen(false); }}>Open Knowledge Base</button>
+                {intakeCompleted && <button type="button" onClick={() => { setIsSideRailOpen(false); void handleCompleteAndNextJob(); }}>Start New Application</button>}
+              </div>
               {appMode === "pipeline" && (
                 <div className="drawerSettings">
                   <h3>Model settings</h3>
@@ -1666,7 +1905,7 @@ function App() {
                 </div>
               )}
               <p className="sidebarPrivacy">
-                Your browser stores workflow data. Content only leaves your device when you choose a hosted model.
+                Settings stay in your browser; verified knowledge and application sessions stay in local SQLite. Content only leaves your device when you choose a hosted model.
               </p>
             </div>
           </div>

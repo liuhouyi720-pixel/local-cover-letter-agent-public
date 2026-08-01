@@ -4,6 +4,10 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { openKnowledgeDatabase } from "./knowledge/database.mjs";
+import { KnowledgeRepository } from "./knowledge/repository.mjs";
+import { KnowledgeService } from "./knowledge/service.mjs";
+import { createKnowledgeApi } from "./knowledge/api.mjs";
 
 const PORT = 3031;
 const DEFAULT_TEMPLATE_DOCX_PATH = "";
@@ -14,6 +18,10 @@ const IMPORT_SOURCES = new Set(["linkedin", "handshake", "generic"]);
 const MIN_IMPORTED_DESCRIPTION_LENGTH = 120;
 
 let latestImportedJob = null;
+const knowledgeDatabase = await openKnowledgeDatabase();
+const knowledgeRepository = new KnowledgeRepository(knowledgeDatabase.db, { ftsAvailable: knowledgeDatabase.ftsAvailable });
+const knowledgeService = new KnowledgeService(knowledgeRepository);
+const handleKnowledgeRequest = createKnowledgeApi(knowledgeService);
 
 function sanitizeFilenamePart(value) {
   return (value || "")
@@ -200,7 +208,7 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type"
   });
   res.end(JSON.stringify(payload));
@@ -282,7 +290,7 @@ function isChatMessage(value) {
   );
 }
 
-async function chatWithOpenAI({ apiKey, model, messages }) {
+async function chatWithOpenAI({ apiKey, model, messages, temperature = 0.3, jsonMode = false }) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -292,7 +300,8 @@ async function chatWithOpenAI({ apiKey, model, messages }) {
     body: JSON.stringify({
       model,
       messages,
-      temperature: 0.3
+      temperature,
+      ...(jsonMode ? { response_format: { type: "json_object" } } : {})
     })
   });
 
@@ -329,15 +338,21 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type"
     });
     res.end();
     return;
   }
 
+  const requestUrl = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+  if (await handleKnowledgeRequest(req, res, requestUrl, { readJsonBody, sendJson })) return;
+
   if (req.method === "GET" && req.url === "/health") {
-    sendJson(res, 200, { ok: true, service: "cover-letter-export-helper" });
+    sendJson(res, 200, { ok: true, service: "cover-letter-export-helper", knowledge: {
+      databasePath: knowledgeDatabase.databasePath,
+      ftsAvailable: knowledgeDatabase.ftsAvailable
+    } });
     return;
   }
 
@@ -393,6 +408,8 @@ const server = http.createServer(async (req, res) => {
       const provider = parsed.provider;
       const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
       const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+      const temperature = typeof parsed.temperature === "number" && parsed.temperature >= 0 && parsed.temperature <= 2 ? parsed.temperature : 0.3;
+      const jsonMode = parsed.jsonMode === true;
       if (provider !== "openai") {
         sendJson(res, 400, { error: "Only OpenAI chat is supported by this helper endpoint." });
         return;
@@ -413,7 +430,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const content = await chatWithOpenAI({ apiKey, model, messages });
+      const content = await chatWithOpenAI({ apiKey, model, messages, temperature, jsonMode });
       sendJson(res, 200, { ok: true, content });
     } catch (error) {
       sendJson(res, 500, {

@@ -1,6 +1,7 @@
 export type EvidenceItem = {
   cover_letter_sentence: string;
   resume_evidence: string[];
+  source_ids: string[];
 };
 
 export type AISuggestion = {
@@ -212,6 +213,10 @@ export function tryParseAndValidate(raw: string): ValidationResult {
     }
     if (!isStringArray(evidenceObj.resume_evidence)) {
       return { ok: false, error: `evidence_map[${i}].resume_evidence must be an array of strings.` };
+    }
+    if (evidenceObj.source_ids === undefined) evidenceObj.source_ids = [];
+    if (!isStringArray(evidenceObj.source_ids)) {
+      return { ok: false, error: `evidence_map[${i}].source_ids must be an array of strings.` };
     }
   }
 

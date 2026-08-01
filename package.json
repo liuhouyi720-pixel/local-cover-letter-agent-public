@@ -2,14 +2,22 @@
   "name": "cover-letter-agent-mvp0",
   "private": false,
   "version": "0.1.0",
+  "engines": { "node": ">=20" },
   "type": "module",
   "scripts": {
     "dev": "node ./node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173 --strictPort",
     "build": "tsc -b && node ./node_modules/vite/bin/vite.js build",
     "preview": "node ./node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 5173 --strictPort",
-    "export-helper": "node ./tools/export-helper/server.mjs"
+    "export-helper": "node ./tools/export-helper/server.mjs",
+    "typecheck": "tsc -b",
+    "test": "node --test tests/knowledge.test.mjs",
+    "knowledge:migrate": "node ./tools/export-helper/knowledge/cli.mjs migrate",
+    "knowledge:inspect": "node ./tools/export-helper/knowledge/cli.mjs pending",
+    "knowledge:info": "node ./tools/export-helper/knowledge/cli.mjs info",
+    "knowledge:reset-dev": "node ./tools/export-helper/knowledge/cli.mjs reset-dev --confirm"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "mammoth": "^1.11.0",
     "pdfjs-dist": "^4.10.38",
     "pdfkit": "^0.16.0",

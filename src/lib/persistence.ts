@@ -33,6 +33,7 @@ export type SavedAppState = {
   applicantLocationLine: string;
   signatureName: string;
   approvedMemory: StructuredMemory;
+  applicationSessionId: string;
 };
 
 const STORAGE_KEY = "cla_mvp1_saved_state_v2";

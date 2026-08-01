@@ -5,6 +5,8 @@ export type ChatMessage = {
   content: string;
 };
 
+export type ChatOptions = { temperature?: number; jsonMode?: boolean };
+
 export type ProviderConfig =
   | {
       provider: "ollama";
@@ -47,6 +49,7 @@ async function chatWithOllama(params: {
   baseUrl: string;
   model: string;
   messages: ChatMessage[];
+  options?: ChatOptions;
 }): Promise<string> {
   const url = `${params.baseUrl.replace(/\/+$/, "")}/api/chat`;
   let response: Response;
@@ -59,7 +62,9 @@ async function chatWithOllama(params: {
         model: params.model,
         messages: params.messages,
         stream: false,
-        keep_alive: "0s"
+        keep_alive: "0s",
+        ...(params.options?.jsonMode ? { format: "json" } : {}),
+        options: { temperature: params.options?.temperature ?? 0.3 }
       })
     });
   } catch {
@@ -86,7 +91,7 @@ async function chatWithOllama(params: {
   return content.trim();
 }
 
-async function chatWithOpenAI(params: { model: string; messages: ChatMessage[] }): Promise<string> {
+async function chatWithOpenAI(params: { model: string; messages: ChatMessage[]; options?: ChatOptions }): Promise<string> {
   let response: Response;
 
   try {
@@ -96,7 +101,9 @@ async function chatWithOpenAI(params: { model: string; messages: ChatMessage[] }
       body: JSON.stringify({
         provider: "openai",
         model: params.model,
-        messages: params.messages
+        messages: params.messages,
+        temperature: params.options?.temperature,
+        jsonMode: params.options?.jsonMode
       })
     });
   } catch {
@@ -113,18 +120,20 @@ async function chatWithOpenAI(params: { model: string; messages: ChatMessage[] }
   return data.content.trim();
 }
 
-export async function chatWithProvider(config: ProviderConfig, messages: ChatMessage[]): Promise<string> {
+export async function chatWithProvider(config: ProviderConfig, messages: ChatMessage[], options?: ChatOptions): Promise<string> {
   if (config.provider === "ollama") {
     return chatWithOllama({
       baseUrl: config.baseUrl,
       model: config.model,
-      messages
+      messages,
+      options
     });
   }
 
   return chatWithOpenAI({
     model: config.model,
-    messages
+    messages,
+    options
   });
 }
 

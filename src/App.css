@@ -556,6 +556,29 @@ input[type="file"]::file-selector-button {
   box-shadow: none;
 }
 
+.knowledgePage { max-width: 1180px; margin: 0 auto; }
+.knowledgeTitleRow { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.knowledgeFilters { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 10px; margin: 18px 0; }
+.knowledgeLayout { display: grid; grid-template-columns: minmax(260px, .85fr) minmax(360px, 1.4fr); gap: 18px; }
+.knowledgeList { display: flex; flex-direction: column; gap: 8px; max-height: 68vh; overflow: auto; }
+.knowledgeListItem { text-align: left; display: flex; flex-direction: column; gap: 7px; padding: 13px; background: rgba(255,255,255,.035); border: 1px solid var(--border); }
+.knowledgeListItem.selected { border-color: var(--accent); background: rgba(101,116,255,.1); }
+.knowledgeListItem span:first-child { display: flex; justify-content: space-between; gap: 8px; }
+.knowledgeListItem small { color: var(--muted); font-weight: 400; }
+.knowledgeDetail { border: 1px solid var(--border); border-radius: 14px; padding: 18px; min-height: 320px; }
+.knowledgeDetail pre { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+.knowledgeDetail blockquote { margin: 10px 0; padding: 10px 14px; border-left: 3px solid var(--accent); background: rgba(255,255,255,.03); }
+.knowledgeForm { display: grid; gap: 12px; }
+.candidateCard, .evidenceCard { border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-top: 12px; background: rgba(255,255,255,.025); }
+.candidateChoices { display: flex; gap: 18px; flex-wrap: wrap; margin: 10px 0; }
+.candidateChoices label { display: flex; flex-direction: row; align-items: center; gap: 7px; }
+.candidateChoices input { width: auto; }
+@media (max-width: 820px) {
+  .knowledgeFilters, .knowledgeLayout { grid-template-columns: 1fr; }
+  .knowledgeList { max-height: 36vh; }
+  .knowledgeTitleRow { flex-direction: column; }
+}
+
 .devPanel summary {
   cursor: pointer;
   color: var(--muted);

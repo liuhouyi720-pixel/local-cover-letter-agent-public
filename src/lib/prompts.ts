@@ -7,7 +7,8 @@ const COVER_LETTER_OUTPUT_SCHEMA = `{
   "evidence_map": [
     {
       "cover_letter_sentence": "string",
-      "resume_evidence": ["string", "string"]
+      "resume_evidence": ["string", "string"],
+      "source_ids": ["knowledge-or-session-source-id"]
     }
   ],
   "ai_suggestion": {
@@ -46,6 +47,7 @@ ${COVER_LETTER_OUTPUT_SCHEMA}
 4) "evidence_map" must be an array of objects with:
    - "cover_letter_sentence": exact sentence from cover_letter
    - "resume_evidence": array of resume/profile snippets directly supporting that sentence
+   - "source_ids": IDs from APPROVED CURRENT EVIDENCE supporting that sentence; use "current-resume" for resume-only evidence
 5) "ai_suggestion" must include:
    - "status": red/yellow/green (red=fatal mismatch, yellow=high risk, green=good fit)
    - "score": fit score from 0 to 10
@@ -55,7 +57,8 @@ ${COVER_LETTER_OUTPUT_SCHEMA}
 6) "missing_info_questions" is an array of clarifying questions for missing facts.
 
 Anti-hallucination rules:
-- Use only facts found in RESUME, PROFILE NOTES, or APPROVED STRUCTURED MEMORY.
+- Use only facts found in CURRENT RESUME SOURCE or APPROVED CURRENT EVIDENCE.
+- JOB DESCRIPTION facts describe the employer and must never be presented as facts about the applicant.
 - Never invent employers, titles, dates, numbers, tools, certifications, or achievements.
 - If JD asks for info not in provided material, do not fabricate; add a question to missing_info_questions.
 - If evidence is weak, keep claims conservative.
@@ -116,13 +119,13 @@ Preferences:
 JOB DESCRIPTION:
 ${params.jdText}
 
-RESUME TEXT:
+CURRENT RESUME SOURCE:
 ${params.resumeText}
 
-PROFILE NOTES:
+CURRENT APPLICATION INSTRUCTIONS (not factual evidence):
 ${params.profileText || "(empty)"}
 
-APPROVED STRUCTURED MEMORY:
+APPROVED CURRENT EVIDENCE (each record contains a source ID):
 ${params.structuredMemoryText}
 
 EXTRA USER INSTRUCTIONS:

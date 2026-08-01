@@ -39,6 +39,10 @@ Thumbs.db
 coverage/
 .cache/
 tools/export-helper/local-config.json
+tools/export-helper/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 .codex/
 cover-letters/
 output/
